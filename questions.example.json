@@ -1,0 +1,10 @@
+[
+  {
+    "question": "Where does the app calculate whether a budget limit was exceeded?",
+    "answer": "In the budget check function, which compares total spending for the category against its limit and returns an alert."
+  },
+  {
+    "question": "How is JWT authentication verified on protected routes?",
+    "answer": "Middleware reads the token from the Authorization header, verifies it with the secret, and rejects the request if invalid."
+  }
+]

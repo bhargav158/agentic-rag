@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentic RAG Code Assistant</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 24px auto; padding: 0 16px; background: #fafafa; color: #1a1a1a; }
+  h1 { font-size: 22px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 16px; }
+  input { flex: 1; padding: 10px; font-size: 15px; border: 1px solid #bbb; border-radius: 6px; }
+  select, button { padding: 10px 14px; font-size: 15px; border-radius: 6px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+  button { background: #1a56db; color: #fff; border-color: #1a56db; }
+  .step { background: #fff; border: 1px solid #ddd; border-left: 4px solid #1a56db; border-radius: 6px; padding: 8px 12px; margin: 6px 0; font-size: 14px; }
+  .step.rewrite { border-left-color: #d97706; }
+  .step.bad { border-left-color: #dc2626; }
+  .step.good { border-left-color: #16a34a; }
+  .t { color: #777; font-size: 12px; float: right; }
+  #answer { white-space: pre-wrap; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-top: 12px; }
+  #meta { color: #555; font-size: 13px; margin-top: 8px; }
+  #sources div { font-family: monospace; font-size: 13px; color: #333; }
+</style>
+</head>
+<body>
+<h1>Agentic RAG Code Assistant</h1>
+<div class="bar">
+  <input id="q" placeholder="Ask a question about the indexed codebase...">
+  <select id="mode"><option value="agentic">Agentic</option><option value="naive">Naive</option></select>
+  <button id="go">Ask</button>
+</div>
+<div id="trace"></div>
+<div id="answer" hidden></div>
+<div id="meta"></div>
+<div id="sources"></div>
+<script>
+const $ = id => document.getElementById(id);
+const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+
+function describe(e) {
+  switch (e.step) {
+    case "route": return ["Router chose \"" + e.strategy + "\" (" + (e.reason || "") + ")", ""];
+    case "retrieve": return ["Retrieve, attempt " + e.attempt + " [" + e.strategy + "]: \"" + e.query + "\" -> " + e.files.join(", "), ""];
+    case "grade": return ["Grader: " + e.relevant + " of " + e.total + " chunks relevant", e.relevant ? "good" : "bad"];
+    case "rewrite": return ["Rewrote query -> \"" + e.new_query + "\"", "rewrite"];
+    case "generate": return ["Generated answer", ""];
+    case "verify": return [e.supported ? "Verifier: every claim is supported" : "Verifier: unsupported claims -> " + (e.unsupported || []).join("; "), e.supported ? "good" : "bad"];
+    case "regenerate": return ["Regenerating with the verifier's feedback", "rewrite"];
+    case "give_up": return ["No relevant code found after retries", "bad"];
+    default: return [e.step, ""];
+  }
+}
+
+function addStep(e) {
+  const [text, cls] = describe(e);
+  const d = document.createElement("div");
+  d.className = "step " + cls;
+  const t = document.createElement("span");
+  t.className = "t"; t.textContent = e.t + "s";
+  d.appendChild(t);
+  d.appendChild(document.createTextNode(text));
+  $("trace").appendChild(d);
+}
+
+ws.onmessage = ev => {
+  const e = JSON.parse(ev.data);
+  if (e.step === "final") {
+    $("answer").hidden = false;
+    $("answer").textContent = e.answer;
+    const v = e.verified === null ? "n/a" : (e.verified ? "yes" : "NO");
+    $("meta").textContent = "LLM calls: " + e.llm_calls + " | latency: " + e.latency_s + "s | attempts: " + e.attempts + " | verified: " + v;
+    $("sources").innerHTML = "";
+    (e.sources || []).forEach(s => {
+      const d = document.createElement("div");
+      d.textContent = s.file + ":" + s.start + "-" + s.end;
+      $("sources").appendChild(d);
+    });
+    $("go").disabled = false;
+  } else if (e.step === "error") {
+    $("answer").hidden = false;
+    $("answer").textContent = "Error: " + e.message;
+    $("go").disabled = false;
+  } else {
+    addStep(e);
+  }
+};
+
+function ask() {
+  const q = $("q").value.trim();
+  if (!q) return;
+  $("trace").innerHTML = ""; $("answer").hidden = true; $("meta").textContent = ""; $("sources").innerHTML = "";
+  $("go").disabled = true;
+  ws.send(JSON.stringify({ question: q, mode: $("mode").value }));
+}
+$("go").onclick = ask;
+$("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+</script>
+</body>
+</html>
