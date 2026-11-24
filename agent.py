@@ -4,6 +4,7 @@ import time
 import llm
 import prompts
 from config import MAX_RETRIES, TOP_K
+from formatting import source_dict
 from retrieval import retrieve
 
 STRATEGIES = {"vector", "keyword", "hybrid", "none"}
@@ -45,7 +46,7 @@ def _answer(question, pool, feedback=""):
     return llm.generate(prompts.ANSWER.format(feedback=feedback, context=context, question=question))
 
 
-def run_agent(question, emit=None):
+def run_agent(question, emit=None, repo=None):
     emit = emit or (lambda e: None)
     counter = llm.start_counting()
     t0 = time.time()
@@ -59,7 +60,7 @@ def run_agent(question, emit=None):
     def result(answer, pool, verified, attempts):
         return {
             "answer": answer, "verified": verified, "attempts": attempts,
-            "sources": [{"file": c["file"], "start": c["start"], "end": c["end"]} for c in pool],
+            "sources": [source_dict(c) for c in pool],
             "llm_calls": counter[0], "latency_s": round(time.time() - t0, 2),
             "trace": trace, "contexts": [c["text"] for c in pool],
         }
@@ -77,7 +78,7 @@ def run_agent(question, emit=None):
     for attempt in range(1, MAX_RETRIES + 1):
         attempts = attempt
         strat = strategy if attempt == 1 else "hybrid"  # widen the search on retries
-        chunks = retrieve(query, strat, TOP_K)
+        chunks = retrieve(query, strat, TOP_K, repo)
         log("retrieve", attempt=attempt, strategy=strat, query=query,
             files=[c["file"] for c in chunks])
         relevant = grade(question, chunks)

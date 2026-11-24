@@ -12,9 +12,9 @@ import prompts
 import store
 
 
-def main(n=30, out="questions.json", seed=42):
+def main(n=30, out="questions.json", seed=42, repo=None):
     col = store.collection()
-    data = col.get(include=["documents"])
+    data = col.get(where={"repo": repo}, include=["documents"]) if repo else col.get(include=["documents"])
     pool = [d for d in data["documents"] if len(d) > 400]
     random.Random(seed).shuffle(pool)
     questions = []
@@ -35,5 +35,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=30)
     ap.add_argument("--out", default="questions.json")
+    ap.add_argument("--repo", help="only draw questions from this indexed repo")
     a = ap.parse_args()
-    main(a.n, a.out)
+    main(a.n, a.out, repo=a.repo)

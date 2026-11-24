@@ -26,9 +26,18 @@ Write ONE better search query using likely identifiers, file names and keywords 
 Return only the query text."""
 
 ANSWER = """TASK: ANSWER
-Answer the question using ONLY the code context below.
-If the context is not enough, say "I don't know based on the codebase."
-Cite sources inline like [path:start-end]. Be concise.
+Answer the user's question about this codebase using ONLY the code context below.
+Answer exactly what was asked: cover everything in the context that is relevant to the question,
+and leave out anything that is not. Do not describe unrelated parts of the code.
+If the context is not enough, reply with exactly: I don't know based on the codebase.
+
+Otherwise reply in exactly this format, in plain text:
+ANSWER: <one or two sentences that directly answer the question>
+EXPLANATION: <3 to 6 sentences in simple language for a beginner. When you use a technical term, explain it in brackets the first time.>
+WHERE:
+- <path:start-end> - <what that code does>
+
+Cite sources inline like [path:start-end]. Only cite files that appear in the context.
 {feedback}
 Context:
 {context}
@@ -36,7 +45,8 @@ Context:
 Question: {question}"""
 
 VERIFY = """TASK: VERIFY
-Check whether every factual claim in the ANSWER is supported by the CONTEXT.
+Check whether every factual claim about THIS CODEBASE in the ANSWER is supported by the CONTEXT.
+Ignore general definitions of technical terms (for example a bracketed explanation of what an API is).
 Return JSON only: {{"supported": true, "unsupported_claims": []}}
 Set "supported" to false and list the claims if anything is not backed by the CONTEXT.
 
@@ -64,3 +74,21 @@ that can be answered from it, plus the reference answer. Do not mention "chunk" 
 Return JSON only: {{"question": "...", "answer": "..."}}
 
 {chunk}"""
+
+
+OVERVIEW = """TASK: OVERVIEW
+Explain this GitHub repository to a beginner in simple language.
+Use only the README and file list below. Do not invent features.
+Reply in exactly this format, in plain text:
+WHAT IT DOES: <2 to 3 sentences>
+TECH STACK: <comma-separated list>
+KEY FILES:
+- <path> - <purpose in a few words>
+KEY TERMS:
+- <term> - <one-line plain explanation>
+
+README:
+{readme}
+
+FILES:
+{files}"""

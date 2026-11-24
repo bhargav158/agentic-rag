@@ -1,12 +1,13 @@
 import asyncio
 import os
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+import repo_manager
 from agent import run_agent
-from naive import run_naive
+from formatting import parse_answer
 
 app = FastAPI(title="Agentic RAG Code Assistant")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -14,18 +15,22 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 class Ask(BaseModel):
     question: str
-    mode: str = "agentic"  # "agentic" or "naive"
+    repo: str = ""         # empty = search every indexed repo
 
 
-def _run(question, mode, emit=None):
-    fn = run_naive if mode == "naive" else run_agent
-    res = fn(question, emit)
+class IndexRequest(BaseModel):
+    url: str
+
+
+def _run(question, emit=None, repo=None):
+    res = run_agent(question, emit, repo or None)
     res.pop("contexts", None)
+    res["parts"] = parse_answer(res["answer"])  # Answer / Explanation / Where, or None
     return res
 
 
 @app.get("/")
-def index():
+def home():
     return FileResponse(os.path.join(HERE, "static", "index.html"))
 
 
@@ -34,9 +39,29 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/repos")
+def repos():
+    return repo_manager.list_repos()
+
+
+@app.post("/index")
+def start_index(req: IndexRequest):
+    try:
+        return {"name": repo_manager.start_job(req.url)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.get("/index/status/{name}")
+def index_status(name: str):
+    return repo_manager.JOBS.get(name, {"status": "unknown"})
+
+
 @app.post("/ask")
 def ask(body: Ask):
-    return _run(body.question, body.mode)
+    return _run(body.question, None, body.repo)
 
 
 @app.websocket("/ws")
@@ -46,14 +71,14 @@ async def ws(websocket: WebSocket):
     try:
         while True:
             msg = await websocket.receive_json()
-            question, mode = msg["question"], msg.get("mode", "agentic")
+            question, repo = msg["question"], msg.get("repo", "")
             loop = asyncio.get_running_loop()
             queue = asyncio.Queue()
 
             def emit(ev):
                 loop.call_soon_threadsafe(queue.put_nowait, ev)
 
-            task = asyncio.create_task(asyncio.to_thread(_run, question, mode, emit))
+            task = asyncio.create_task(asyncio.to_thread(_run, question, emit, repo))
             while not (task.done() and queue.empty()):
                 try:
                     ev = await asyncio.wait_for(queue.get(), timeout=0.1)

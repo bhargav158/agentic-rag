@@ -19,8 +19,9 @@ def tokenize(text):
 
 
 def _chunk(id_, doc, meta, score):
-    return {"id": id_, "text": doc, "file": meta["file"], "start": meta["start"],
-            "end": meta["end"], "score": float(score)}
+    return {"id": id_, "text": doc, "file": meta["file"], "path": meta.get("path", meta["file"]),
+            "github": meta.get("github", ""), "start": meta["start"], "end": meta["end"],
+            "score": float(score)}
 
 
 def _load_bm25():
@@ -37,12 +38,13 @@ def _load_bm25():
     return _bm25
 
 
-def vector_search(query, k):
+def vector_search(query, k, repo=None):
     col = store.collection()
     if col.count() == 0:
         raise RuntimeError("The index is empty. Run: python index_repo.py <path-to-repo>")
     qv = llm.embed([query], "RETRIEVAL_QUERY")[0]
-    res = col.query(query_embeddings=[qv], n_results=min(k, col.count()))
+    res = col.query(query_embeddings=[qv], n_results=min(k, col.count()),
+                    where={"repo": repo} if repo else None)
     return [
         _chunk(i, d, m, 1 - dist)
         for i, d, m, dist in zip(res["ids"][0], res["documents"][0],
@@ -50,21 +52,23 @@ def vector_search(query, k):
     ]
 
 
-def keyword_search(query, k):
+def keyword_search(query, k, repo=None):
     b = _load_bm25()
     toks = tokenize(query)
     if not toks:
         return []
     scores = b["index"].get_scores(toks)
+    if repo:  # only this repo's chunks can score
+        scores = [sc if m.get("repo") == repo else 0 for sc, m in zip(scores, b["metas"])]
     order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:k]
     return [_chunk(b["ids"][i], b["docs"][i], b["metas"][i], scores[i])
             for i in order if scores[i] > 0]
 
 
-def hybrid_search(query, k):
+def hybrid_search(query, k, repo=None):
     """Reciprocal Rank Fusion: score = sum of 1/(60 + rank) across both result lists."""
     fused, by_id = {}, {}
-    for results in (vector_search(query, k * 2), keyword_search(query, k * 2)):
+    for results in (vector_search(query, k * 2, repo), keyword_search(query, k * 2, repo)):
         for rank, c in enumerate(results):
             fused[c["id"]] = fused.get(c["id"], 0) + 1 / (60 + rank)
             by_id[c["id"]] = c
@@ -72,9 +76,9 @@ def hybrid_search(query, k):
     return [dict(by_id[i], score=fused[i]) for i in top]
 
 
-def retrieve(query, strategy, k):
+def retrieve(query, strategy, k, repo=None):
     if strategy == "keyword":
-        return keyword_search(query, k)
+        return keyword_search(query, k, repo)
     if strategy == "vector":
-        return vector_search(query, k)
-    return hybrid_search(query, k)
+        return vector_search(query, k, repo)
+    return hybrid_search(query, k, repo)

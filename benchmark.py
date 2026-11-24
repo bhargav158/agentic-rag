@@ -1,7 +1,7 @@
-"""Compare naive RAG vs agentic RAG on your own question set.
+"""Measure how well the agentic RAG answers questions about your indexed repo.
 
-Usage:  python benchmark.py                      (uses questions.json)
-        python benchmark.py --limit 5 --sleep 2  (quick test, slower to respect rate limits)
+Usage:  python benchmark.py --repo ai-agent-app             (uses questions.json)
+        python benchmark.py --limit 5 --sleep 2             (quick test)
 """
 import argparse
 import json
@@ -11,7 +11,6 @@ import time
 import llm
 import prompts
 from agent import run_agent, verify
-from naive import run_naive
 
 
 def judge(question, reference, candidate):
@@ -36,7 +35,7 @@ def avg(values):
     return round(sum(values) / len(values), 2) if values else None
 
 
-def run(questions_path="questions.json", limit=None, sleep=1.0, out_dir="results"):
+def run(questions_path="questions.json", limit=None, sleep=1.0, out_dir="results", repo=None):
     with open(questions_path, encoding="utf-8") as f:
         questions = json.load(f)
     if limit:
@@ -44,32 +43,30 @@ def run(questions_path="questions.json", limit=None, sleep=1.0, out_dir="results
 
     rows = []
     for i, q in enumerate(questions, 1):
-        for mode, fn in (("naive", run_naive), ("agentic", run_agent)):
-            try:
-                res = fn(q["question"])
-                row = {
-                    "mode": mode, "question": q["question"], "answer": res["answer"],
-                    "correct": judge(q["question"], q["answer"], res["answer"]),
-                    "faithful": faithful(res["answer"], res["contexts"]),
-                    "latency_s": res["latency_s"], "llm_calls": res["llm_calls"],
-                }
-            except Exception as e:
-                row = {"mode": mode, "question": q["question"], "error": str(e)}
-            rows.append(row)
-            print(f"[{i}/{len(questions)}] {mode:8s} correct={row.get('correct')} "
-                  f"latency={row.get('latency_s')}s calls={row.get('llm_calls')}")
-            time.sleep(sleep)
+        try:
+            res = run_agent(q["question"], None, repo)
+            row = {
+                "question": q["question"], "answer": res["answer"],
+                "correct": judge(q["question"], q["answer"], res["answer"]),
+                "faithful": faithful(res["answer"], res["contexts"]),
+                "latency_s": res["latency_s"], "llm_calls": res["llm_calls"],
+                "attempts": res["attempts"],
+            }
+        except Exception as e:
+            row = {"question": q["question"], "error": str(e)}
+        rows.append(row)
+        print(f"[{i}/{len(questions)}] correct={row.get('correct')} faithful={row.get('faithful')} "
+              f"latency={row.get('latency_s')}s calls={row.get('llm_calls')}")
+        time.sleep(sleep)
 
-    lines = ["| Mode | Questions | Correct % | Faithful % | Avg latency (s) | Avg LLM calls |",
-             "|---|---|---|---|---|---|"]
-    for mode in ("naive", "agentic"):
-        ok = [r for r in rows if r["mode"] == mode and "error" not in r]
-        lines.append(
-            f"| {mode} | {len(ok)} | {pct([r['correct'] for r in ok])} | "
-            f"{pct([r['faithful'] for r in ok])} | {avg([r['latency_s'] for r in ok])} | "
-            f"{avg([r['llm_calls'] for r in ok])} |"
-        )
-    table = "\n".join(lines)
+    ok = [r for r in rows if "error" not in r]
+    table = "\n".join([
+        "| Questions | Correct % | Faithful % | Avg latency (s) | Avg LLM calls | Avg search attempts |",
+        "|---|---|---|---|---|---|",
+        f"| {len(ok)} | {pct([r['correct'] for r in ok])} | {pct([r['faithful'] for r in ok])} | "
+        f"{avg([r['latency_s'] for r in ok])} | {avg([r['llm_calls'] for r in ok])} | "
+        f"{avg([r['attempts'] for r in ok])} |",
+    ])
     print("\n" + table)
 
     os.makedirs(out_dir, exist_ok=True)
@@ -86,5 +83,6 @@ if __name__ == "__main__":
     ap.add_argument("--questions", default="questions.json")
     ap.add_argument("--limit", type=int)
     ap.add_argument("--sleep", type=float, default=1.0)
+    ap.add_argument("--repo", help="only search this indexed repo")
     a = ap.parse_args()
-    run(a.questions, a.limit, a.sleep)
+    run(a.questions, a.limit, a.sleep, repo=a.repo)

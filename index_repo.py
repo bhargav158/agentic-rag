@@ -1,15 +1,16 @@
 """Index a code repository: walk files -> chunk by lines -> embed -> store in ChromaDB.
 
 Usage:  python index_repo.py C:\\path\\to\\repo
-        python index_repo.py C:\\path\\to\\another-repo --name voice-agent
-        python index_repo.py C:\\path\\to\\repo --reset      (wipe the index first)
+        python index_repo.py C:\\path\\to\\repo --name myrepo --github owner/repo
+        python index_repo.py C:\\path\\to\\repo --reset      (wipe the whole index first)
 """
 import argparse
+import hashlib
 import os
 
 import llm
 import store
-from config import CHUNK_LINES, CHUNK_OVERLAP
+from config import CHUNK_LINES, CHUNK_OVERLAP, MAX_CHUNKS
 
 EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".md", ".html", ".sql",
         ".yml", ".yaml", ".toml", ".txt", ".java", ".c", ".cpp", ".go"}
@@ -32,14 +33,8 @@ def chunk_file(text):
             break
 
 
-def index_repo(path, name=None, reset=False):
-    path = os.path.abspath(path)
-    name = name or os.path.basename(path)
-    if reset:
-        store.reset()
-
-    ids, docs, metas = [], [], []
-    files = 0
+def collect_files(path):
+    found = []
     for root, dirs, filenames in os.walk(path):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for fn in filenames:
@@ -48,18 +43,53 @@ def index_repo(path, name=None, reset=False):
             full = os.path.join(root, fn)
             if os.path.getsize(full) > MAX_BYTES:
                 continue
-            rel = f"{name}/" + os.path.relpath(full, path).replace("\\", "/")
-            with open(full, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-            files += 1
-            for s, e, body in chunk_file(text):
-                ids.append(f"{rel}:{s}-{e}")
-                docs.append(f"[{rel}:{s}-{e}]\n{body}")
-                metas.append({"file": rel, "start": s, "end": e, "repo": name})
+            found.append((os.path.relpath(full, path).replace("\\", "/"), full))
+    # README and top-level files first, so the chunk cap keeps the most important code
+    found.sort(key=lambda f: (0 if os.path.basename(f[0]).lower().startswith("readme") else 1,
+                              f[0].count("/"), f[0]))
+    return found
+
+
+def index_repo(path, name=None, reset=False, github="", progress=None):
+    """Returns the number of chunks the repo has in the index.
+    progress(done, total) is called after every stored batch."""
+    path = os.path.abspath(path)
+    name = name or os.path.basename(path)
+    if reset:
+        store.reset()
+
+    ids, docs, metas = [], [], []
+    seen, files, dupes, capped = set(), 0, 0, False
+    for rel, full in collect_files(path):
+        with open(full, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+        if not text.strip():
+            continue
+        digest = hashlib.sha1(text.encode("utf-8", "ignore")).hexdigest()
+        if digest in seen:  # identical file already indexed (e.g. a copied folder)
+            dupes += 1
+            continue
+        seen.add(digest)
+        files += 1
+        for s, e, body in chunk_file(text):
+            if len(ids) >= MAX_CHUNKS:
+                capped = True
+                break
+            label = f"{name}/{rel}"
+            ids.append(f"{label}:{s}-{e}")
+            docs.append(f"[{label}:{s}-{e}]\n{body}")
+            metas.append({"file": label, "path": rel, "start": s, "end": e,
+                          "repo": name, "github": github or ""})
+        if capped:
+            break
 
     if not ids:
         print("No indexable files found.")
         return 0
+    if dupes:
+        print(f"Skipped {dupes} duplicate files.")
+    if capped:
+        print(f"Reached the {MAX_CHUNKS}-chunk limit; README and top-level files were indexed first.")
 
     # Resumable: skip chunks already stored, and save after every batch so a
     # rate-limit error never loses progress. Just run the same command again.
@@ -67,13 +97,18 @@ def index_repo(path, name=None, reset=False):
     todo = [i for i, cid in enumerate(ids) if cid not in done]
     print(f"Found {len(ids)} chunks in {files} files; {len(ids) - len(todo)} already indexed, "
           f"embedding {len(todo)}...")
+    if progress:
+        progress(0, len(todo))
     BATCH = 20
     for b in range(0, len(todo), BATCH):
         sel = todo[b:b + BATCH]
         b_docs = [docs[i] for i in sel]
         vecs = llm.embed(b_docs, "RETRIEVAL_DOCUMENT")
         store.add([ids[i] for i in sel], b_docs, vecs, [metas[i] for i in sel])
-        print(f"  stored {min(b + BATCH, len(todo))}/{len(todo)}")
+        n_done = min(b + BATCH, len(todo))
+        print(f"  stored {n_done}/{len(todo)}")
+        if progress:
+            progress(n_done, len(todo))
     print(f"Done. '{name}' has {len(ids)} chunks indexed.")
     return len(ids)
 
@@ -82,6 +117,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("path")
     ap.add_argument("--name")
+    ap.add_argument("--github", default="", help="owner/repo, enables clickable source links")
     ap.add_argument("--reset", action="store_true")
     a = ap.parse_args()
-    index_repo(a.path, a.name, a.reset)
+    index_repo(a.path, a.name, a.reset, a.github)

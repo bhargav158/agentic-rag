@@ -37,3 +37,8 @@ def add(ids, docs, embeddings, metas):
             embeddings=embeddings[i:i + 100],
             metadatas=metas[i:i + 100],
         )
+
+
+def delete_repo(name):
+    """Remove every chunk of one repo (used when a repo is re-indexed)."""
+    collection().delete(where={"repo": name})

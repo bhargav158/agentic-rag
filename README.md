@@ -1,14 +1,22 @@
 # Agentic RAG Code Assistant
 
-Ask questions about a codebase. The agent routes the search, grades what it retrieved, rewrites
-the query when retrieval is poor, and verifies its own answer. A benchmark compares it with plain RAG.
+**Ask questions about any public GitHub repository and get answers from the actual code, checked by the agent before you see them.**
 
 ```
+GitHub link -> clone -> chunk -> embed -> ChromaDB  (+ plain-English overview)
+
 question -> ROUTE (vector | keyword | hybrid | none)
          -> RETRIEVE -> GRADE --irrelevant--> REWRITE -> RETRIEVE (max 3 loops)
-         -> GENERATE (with [file:lines] citations)
+         -> GENERATE  (Answer / In simple terms / Where in the code)
          -> VERIFY --unsupported claims--> REGENERATE once
 ```
+
+## What the output looks like
+
+- **Answer:** one or two sentences that answer exactly what was asked.
+- **In simple terms:** a beginner-friendly explanation; technical terms are explained in brackets.
+- **Where in the code:** file and line ranges, each with a clickable GitHub link.
+- **Agent steps:** a collapsible live trace of route, retrieve, grade, rewrite, verify.
 
 ## Setup (PowerShell)
 
@@ -20,55 +28,56 @@ pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
 
-Put your key from aistudio.google.com/apikey in `.env`.
+Put your key from aistudio.google.com/apikey in `.env`. `git` must be installed (the app uses it to download repos).
 
-## 1. Check the wiring (no API key needed)
-
-```powershell
-python tests/test_offline.py
-```
-
-## 2. Index your repos
+## Run
 
 ```powershell
-python index_repo.py C:\path\to\Fintrack --name fintrack --reset
-python index_repo.py C:\path\to\Ai-agent-final --name voice-agent
-```
-
-## 3. Run the app
-
-```powershell
+python tests/test_offline.py     # optional: checks the wiring, no API key needed
 uvicorn server:app --reload
 ```
 
-Open http://127.0.0.1:8000 . Switch between Agentic and Naive and watch the live trace.
+Open http://127.0.0.1:8000, paste a public GitHub link, and click **Index it**.
+Then ask a question, for example: "Where is authentication handled?"
 
-## 4. Benchmark (this produces the numbers for your resume)
-
-```powershell
-python gen_questions.py --n 30
-```
-
-Open `questions.json` and review it: delete bad questions and fix wrong reference answers.
-Then:
+Command-line indexing also works:
 
 ```powershell
-python benchmark.py --sleep 2
+python index_repo.py C:\path\to\repo --name myrepo --github owner/repo
 ```
 
-Results are saved to `results/results.md` and `results/results.json`.
+## Evaluate (optional)
+
+```powershell
+python gen_questions.py --n 15 --repo ai-agent-app
+python benchmark.py --repo ai-agent-app --sleep 5
+```
+
+Open `questions.json` between the two commands and fix any bad questions. The benchmark reports
+correctness, faithfulness, latency, LLM calls and search attempts per question in `results/results.md`.
+
+## Scale and limits
+
+- Indexing is **resumable** and saves after every batch. A rate-limit stop never loses progress.
+- **Duplicate files** (for example a copied folder) are skipped.
+- Each repo is capped at `MAX_CHUNKS` chunks (default 400, set in `.env`). README and top-level files are indexed first.
+- Free-tier embedding limits make big repos slow: expect roughly 1 to 2 minutes per 100 chunks.
+- Questions can be scoped to one repo, so results from other repos never mix in.
+- Repos are downloaded to `~/rag_repos`, outside the project, so the dev server never restarts mid-index.
+- Only public GitHub repositories work.
 
 ## Files
 
 | File | Job |
 |---|---|
-| `index_repo.py` | walk repo, chunk by 40 lines (10 overlap), embed, store in ChromaDB |
-| `retrieval.py` | vector, BM25 keyword, and hybrid (Reciprocal Rank Fusion) search |
+| `repo_manager.py` | paste-a-link job: clone, index, overview, repo list |
+| `index_repo.py` | walk repo, chunk by 40 lines (10 overlap), dedupe, embed, store |
+| `retrieval.py` | vector, BM25 keyword, hybrid (Reciprocal Rank Fusion), repo filter |
 | `agent.py` | the agentic loop |
-| `naive.py` | baseline: retrieve once, answer once |
-| `server.py`, `static/index.html` | FastAPI + WebSocket live trace UI |
-| `benchmark.py`, `gen_questions.py` | naive vs agentic comparison |
-| `prompts.py`, `llm.py`, `config.py` | prompts, Gemini wrapper, settings |
+| `formatting.py` | turns model output into Answer / Explanation / Where, builds GitHub links |
+| `server.py`, `static/index.html` | FastAPI + WebSocket UI |
+| `benchmark.py`, `gen_questions.py` | optional quality check |
+| `prompts.py`, `llm.py`, `config.py`, `store.py` | prompts, Gemini wrapper, settings, ChromaDB |
 
 ## Design decisions (good interview answers)
 
@@ -76,19 +85,22 @@ Results are saved to `results/results.md` and `results/results.json`.
 - **Grading is one LLM call for all chunks**, not one per chunk, to cut cost and latency.
 - **Retries widen the search:** attempt 1 uses the router's choice, later attempts use hybrid.
 - **Retries are capped at 3** so it cannot loop forever or burn the API quota.
-- **If the grader or verifier returns bad JSON,** the code keeps the chunks or the answer instead of failing.
 - **If nothing relevant is found,** it answers "I don't know" instead of guessing.
-- **Benchmark judging is separate** from the agent's own calls, so the "LLM calls" column is fair.
+- **The verifier ignores general definitions** and checks only claims about the codebase.
+- **Only rate limits and server errors are retried;** a 400 error fails immediately.
+- **The repo URL is validated** and `git` runs without a shell, so a pasted link cannot inject commands.
 
 ## Known limitations (say these honestly)
 
 - The grader and verifier are LLMs, so they can be wrong too.
 - Auto-generated benchmark questions come from single chunks, so review them by hand.
 - No "read whole file" tool yet. Good next step.
+- Indexing runs one repo at a time to stay inside free-tier limits.
 
 ## Troubleshooting
 
-- `429` or quota errors: raise `--sleep` in the benchmark, or wait a minute (free tier limits).
+- `429` or quota errors: wait a minute, or raise `--sleep` in the benchmark.
 - A model name errors: set `GEN_MODEL` in `.env` to a current name from ai.google.dev.
+- "Could not download the repo": check that the repo is public and `git --version` works.
 - `chromadb` fails to install on Windows with a "Visual C++ 14.0 required" message: run
   `pip install --upgrade pip` and retry, or use Python 3.11.

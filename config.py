@@ -13,3 +13,6 @@ CHUNK_LINES = 40      # lines per chunk
 CHUNK_OVERLAP = 10    # lines shared between neighbouring chunks
 TOP_K = 5             # chunks retrieved per search (naive and agentic)
 MAX_RETRIES = 3       # max retrieve -> grade -> rewrite loops
+
+REPOS_DIR = os.getenv("REPOS_DIR", os.path.join(os.path.expanduser("~"), "rag_repos"))  # outside the project
+MAX_CHUNKS = int(os.getenv("MAX_CHUNKS", "400"))   # per-repo cap (keeps free-tier indexing to a few minutes)

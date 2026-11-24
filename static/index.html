@@ -5,94 +5,200 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Agentic RAG Code Assistant</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 820px; margin: 24px auto; padding: 0 16px; background: #fafafa; color: #1a1a1a; }
-  h1 { font-size: 22px; }
-  .bar { display: flex; gap: 8px; margin-bottom: 16px; }
-  input { flex: 1; padding: 10px; font-size: 15px; border: 1px solid #bbb; border-radius: 6px; }
+  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 24px auto; padding: 0 16px; background: #f6f7f9; color: #1a1a1a; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  .sub { color: #555; margin-top: 0; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 16px; margin: 16px 0; }
+  h2 { font-size: 16px; margin: 0 0 10px; }
+  .bar { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+  input { flex: 1; min-width: 200px; padding: 10px; font-size: 15px; border: 1px solid #bbb; border-radius: 6px; }
   select, button { padding: 10px 14px; font-size: 15px; border-radius: 6px; border: 1px solid #bbb; background: #fff; cursor: pointer; }
   button { background: #1a56db; color: #fff; border-color: #1a56db; }
-  .step { background: #fff; border: 1px solid #ddd; border-left: 4px solid #1a56db; border-radius: 6px; padding: 8px 12px; margin: 6px 0; font-size: 14px; }
+  button:disabled { opacity: .6; cursor: wait; }
+  .status { font-size: 14px; color: #444; margin: 6px 0; }
+  .status.err { color: #b91c1c; }
+  .bar2 { height: 6px; background: #e5e7eb; border-radius: 3px; overflow: hidden; margin: 6px 0; }
+  .bar2 > div { height: 100%; width: 0; background: #1a56db; transition: width .3s; }
+  .label { font-size: 12px; font-weight: 700; letter-spacing: .05em; color: #6b7280; margin: 12px 0 4px; text-transform: uppercase; }
+  .big { font-size: 17px; font-weight: 600; background: #eef4ff; border-left: 4px solid #1a56db; padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; }
+  .plain { white-space: pre-wrap; line-height: 1.5; }
+  ul { margin: 4px 0; padding-left: 20px; }
+  li { margin: 3px 0; line-height: 1.4; }
+  code, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
+  a { color: #1a56db; }
+  details { margin: 10px 0; }
+  summary { cursor: pointer; color: #444; font-size: 14px; }
+  .step { background: #fafafa; border: 1px solid #e5e7eb; border-left: 4px solid #1a56db; border-radius: 6px; padding: 6px 10px; margin: 5px 0; font-size: 13px; }
   .step.rewrite { border-left-color: #d97706; }
   .step.bad { border-left-color: #dc2626; }
   .step.good { border-left-color: #16a34a; }
-  .t { color: #777; font-size: 12px; float: right; }
-  #answer { white-space: pre-wrap; background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px; margin-top: 12px; }
-  #meta { color: #555; font-size: 13px; margin-top: 8px; }
-  #sources div { font-family: monospace; font-size: 13px; color: #333; }
+  .t { color: #888; font-size: 12px; float: right; }
+  .meta { color: #555; font-size: 13px; margin-top: 12px; }
+  .warn { color: #b45309; font-size: 13px; }
+  .hint { color: #6b7280; font-size: 13px; margin: 0 0 10px; }
 </style>
 </head>
 <body>
 <h1>Agentic RAG Code Assistant</h1>
-<div class="bar">
-  <input id="q" placeholder="Ask a question about the indexed codebase...">
-  <select id="mode"><option value="agentic">Agentic</option><option value="naive">Naive</option></select>
-  <button id="go">Ask</button>
+<p class="sub">Ask questions about any public GitHub repository and get answers from the actual code, checked by the agent before you see them.</p>
+
+<div class="card">
+  <h2>1. Add a GitHub repository</h2>
+  <p class="hint">Why paste a link? The assistant answers from the real code, so it has to download and read your repository first.</p>
+  <div class="bar">
+    <input id="url" placeholder="https://github.com/owner/repo">
+    <button id="idx">Index it</button>
+  </div>
+  <div id="status" class="status"></div>
+  <div class="bar2" id="progress" hidden><div id="progressFill"></div></div>
+  <div id="overview"></div>
 </div>
-<div id="trace"></div>
-<div id="answer" hidden></div>
-<div id="meta"></div>
-<div id="sources"></div>
+
+<div class="card">
+  <h2>2. Ask a question</h2>
+  <div class="bar">
+    <select id="repo"></select>
+  </div>
+  <div class="bar">
+    <input id="q" placeholder="Type your question about the selected repository...">
+    <button id="go">Ask</button>
+  </div>
+  <p class="hint">For example: "Where is authentication handled?", "How does the agent call its tools?", "What happens if an API call fails?"</p>
+  <details id="traceBox" open hidden>
+    <summary>Agent steps (what the agent did)</summary>
+    <div id="trace"></div>
+  </details>
+  <div id="result" hidden></div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function label(parent, text) { parent.appendChild(el("div", "label", text)); }
+function safeLink(url, text) {
+  if (url && url.startsWith("https://github.com/")) {
+    const a = el("a", "", text);
+    a.href = url; a.target = "_blank"; a.rel = "noopener";
+    return a;
+  }
+  return el("span", "mono", text);
+}
+function termLine(li, line) {
+  const i = line.indexOf(" - ");
+  if (i > 0) { li.appendChild(el("b", "", line.slice(0, i))); li.appendChild(document.createTextNode(" - " + line.slice(i + 3))); }
+  else li.textContent = line;
+}
+
+/* ---------- repo list and overview ---------- */
+let repos = [];
+async function loadRepos(select) {
+  const r = await fetch("/repos"); repos = await r.json();
+  const sel = $("repo"); sel.innerHTML = "";
+  const all = el("option", "", "All repositories"); all.value = ""; sel.appendChild(all);
+  repos.forEach(x => { const o = el("option", "", x.name + " (" + x.chunks + " chunks)"); o.value = x.name; sel.appendChild(o); });
+  if (select) sel.value = select;
+  showOverview();
+}
+function showOverview() {
+  const box = $("overview"); box.innerHTML = "";
+  const r = repos.find(x => x.name === $("repo").value);
+  if (!r || !r.overview) return;
+  const ov = r.overview;
+  label(box, "What it does"); box.appendChild(el("div", "plain", ov.what));
+  if (ov.stack) { label(box, "Tech stack"); box.appendChild(el("div", "plain", ov.stack)); }
+  if (ov.files.length) { label(box, "Key files"); const ul = el("ul"); ov.files.forEach(f => { const li = el("li"); termLine(li, f); ul.appendChild(li); }); box.appendChild(ul); }
+  if (ov.terms.length) { label(box, "Key terms in plain English"); const ul = el("ul"); ov.terms.forEach(f => { const li = el("li"); termLine(li, f); ul.appendChild(li); }); box.appendChild(ul); }
+}
+$("repo").onchange = showOverview;
+
+/* ---------- index a repo ---------- */
+async function poll(name) {
+  const s = await (await fetch("/index/status/" + encodeURIComponent(name))).json();
+  const st = $("status");
+  st.className = "status" + (s.status === "error" ? " err" : "");
+  st.textContent = s.message || s.status;
+  const pct = s.total ? Math.round(100 * s.done / s.total) : (s.status === "summarizing" ? 100 : 5);
+  $("progress").hidden = (s.status === "done" || s.status === "error");
+  $("progressFill").style.width = pct + "%";
+  if (s.status === "done") { $("idx").disabled = false; await loadRepos(name); return; }
+  if (s.status === "error" || s.status === "unknown") { $("idx").disabled = false; return; }
+  setTimeout(() => poll(name), 2000);
+}
+$("idx").onclick = async () => {
+  const url = $("url").value.trim();
+  if (!url) return;
+  $("idx").disabled = true; $("status").className = "status"; $("status").textContent = "Starting...";
+  const r = await fetch("/index", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+  const j = await r.json();
+  if (!r.ok) { $("status").className = "status err"; $("status").textContent = j.detail || "Could not start."; $("idx").disabled = false; return; }
+  poll(j.name);
+};
+
+/* ---------- ask ---------- */
 const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
 
 function describe(e) {
   switch (e.step) {
-    case "route": return ["Router chose \"" + e.strategy + "\" (" + (e.reason || "") + ")", ""];
-    case "retrieve": return ["Retrieve, attempt " + e.attempt + " [" + e.strategy + "]: \"" + e.query + "\" -> " + e.files.join(", "), ""];
-    case "grade": return ["Grader: " + e.relevant + " of " + e.total + " chunks relevant", e.relevant ? "good" : "bad"];
-    case "rewrite": return ["Rewrote query -> \"" + e.new_query + "\"", "rewrite"];
-    case "generate": return ["Generated answer", ""];
-    case "verify": return [e.supported ? "Verifier: every claim is supported" : "Verifier: unsupported claims -> " + (e.unsupported || []).join("; "), e.supported ? "good" : "bad"];
-    case "regenerate": return ["Regenerating with the verifier's feedback", "rewrite"];
+    case "route": return ["Router chose \"" + e.strategy + "\" search (" + (e.reason || "") + ")", ""];
+    case "retrieve": return ["Searched (attempt " + e.attempt + ", " + e.strategy + "): \"" + e.query + "\"", ""];
+    case "grade": return ["Grader kept " + e.relevant + " of " + e.total + " chunks as relevant", e.relevant ? "good" : "bad"];
+    case "rewrite": return ["Search was poor, so the query was rewritten to: \"" + e.new_query + "\"", "rewrite"];
+    case "generate": return ["Wrote an answer", ""];
+    case "verify": return [e.supported ? "Verifier: every claim is backed by the code" : "Verifier found unsupported claims: " + (e.unsupported || []).join("; "), e.supported ? "good" : "bad"];
+    case "regenerate": return ["Rewriting the answer using the verifier's feedback", "rewrite"];
     case "give_up": return ["No relevant code found after retries", "bad"];
     default: return [e.step, ""];
   }
 }
-
 function addStep(e) {
   const [text, cls] = describe(e);
-  const d = document.createElement("div");
-  d.className = "step " + cls;
-  const t = document.createElement("span");
-  t.className = "t"; t.textContent = e.t + "s";
-  d.appendChild(t);
+  const d = el("div", "step " + cls);
+  d.appendChild(el("span", "t", e.t + "s"));
   d.appendChild(document.createTextNode(text));
   $("trace").appendChild(d);
 }
 
+function renderResult(e) {
+  const box = $("result"); box.innerHTML = ""; box.hidden = false;
+  const p = e.parts;
+  if (p) {
+    label(box, "Answer"); box.appendChild(el("div", "big", p.answer));
+    if (p.explanation) { label(box, "In simple terms"); box.appendChild(el("div", "plain", p.explanation)); }
+    if (p.where.length) { label(box, "Where in the code"); const ul = el("ul"); p.where.forEach(w => { const li = el("li"); termLine(li, w); ul.appendChild(li); }); box.appendChild(ul); }
+  } else {
+    label(box, "Answer"); box.appendChild(el("div", "plain", e.answer));
+  }
+  if (e.verified === false) box.appendChild(el("div", "warn", "Heads up: the verifier could not fully confirm every claim in this answer."));
+  const seen = new Set(), srcs = (e.sources || []).filter(s => { const k = s.file + s.start; if (seen.has(k)) return false; seen.add(k); return true; });
+  if (srcs.length) {
+    label(box, "Sources" + (srcs.some(s => s.link) ? " (click to open on GitHub)" : ""));
+    const ul = el("ul"); srcs.forEach(s => { const li = el("li"); li.appendChild(safeLink(s.link, s.file + " lines " + s.start + "-" + s.end)); ul.appendChild(li); }); box.appendChild(ul);
+  }
+  const v = e.verified === null ? "not checked" : (e.verified ? "yes" : "no");
+  box.appendChild(el("div", "meta", "LLM calls: " + e.llm_calls + "  |  time: " + e.latency_s + "s  |  search attempts: " + e.attempts + "  |  verified: " + v));
+}
+
 ws.onmessage = ev => {
   const e = JSON.parse(ev.data);
-  if (e.step === "final") {
-    $("answer").hidden = false;
-    $("answer").textContent = e.answer;
-    const v = e.verified === null ? "n/a" : (e.verified ? "yes" : "NO");
-    $("meta").textContent = "LLM calls: " + e.llm_calls + " | latency: " + e.latency_s + "s | attempts: " + e.attempts + " | verified: " + v;
-    $("sources").innerHTML = "";
-    (e.sources || []).forEach(s => {
-      const d = document.createElement("div");
-      d.textContent = s.file + ":" + s.start + "-" + s.end;
-      $("sources").appendChild(d);
-    });
-    $("go").disabled = false;
-  } else if (e.step === "error") {
-    $("answer").hidden = false;
-    $("answer").textContent = "Error: " + e.message;
-    $("go").disabled = false;
-  } else {
-    addStep(e);
-  }
+  if (e.step === "final") { renderResult(e); $("traceBox").open = false; $("go").disabled = false; }
+  else if (e.step === "error") { const b = $("result"); b.hidden = false; b.innerHTML = ""; b.appendChild(el("div", "status err", "Error: " + e.message)); $("go").disabled = false; }
+  else addStep(e);
 };
-
 function ask() {
   const q = $("q").value.trim();
   if (!q) return;
-  $("trace").innerHTML = ""; $("answer").hidden = true; $("meta").textContent = ""; $("sources").innerHTML = "";
+  $("trace").innerHTML = ""; $("result").hidden = true; $("traceBox").hidden = false; $("traceBox").open = true;
   $("go").disabled = true;
-  ws.send(JSON.stringify({ question: q, mode: $("mode").value }));
+  ws.send(JSON.stringify({ question: q, repo: $("repo").value }));
 }
 $("go").onclick = ask;
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
+loadRepos();
 </script>
 </body>
 </html>
