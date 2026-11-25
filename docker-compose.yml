@@ -1,0 +1,11 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env          # contains GEMINI_API_KEY (never baked into the image)
+    volumes:
+      - ragdata:/data       # keeps the index and cloned repos between restarts
+
+volumes:
+  ragdata:

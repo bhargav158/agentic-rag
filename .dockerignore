@@ -1,0 +1,10 @@
+venv/
+.venv/
+.git/
+.github/
+.env
+chroma_db/
+repos/
+results/
+__pycache__/
+*.pyc

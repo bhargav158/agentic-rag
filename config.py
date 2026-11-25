@@ -16,3 +16,7 @@ MAX_RETRIES = 3       # max retrieve -> grade -> rewrite loops
 
 REPOS_DIR = os.getenv("REPOS_DIR", os.path.join(os.path.expanduser("~"), "rag_repos"))  # outside the project
 MAX_CHUNKS = int(os.getenv("MAX_CHUNKS", "400"))   # per-repo cap (keeps free-tier indexing to a few minutes)
+
+# Optional protection for a public deployment (both off by default)
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")                 # if set, the site asks for this password
+RATE_LIMIT_PER_MIN = int(os.getenv("RATE_LIMIT_PER_MIN", "0"))  # per visitor; 0 = unlimited

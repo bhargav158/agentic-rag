@@ -72,6 +72,34 @@ def generate(prompt, json_mode=False):
     return _raw_generate(prompt, json_mode)
 
 
+def _raw_stream(prompt):
+    for piece in _get_client().models.generate_content_stream(model=config.GEN_MODEL, contents=prompt):
+        if piece.text:
+            yield piece.text
+
+
+def generate_stream(prompt, on_token=None):
+    """Like generate(), but calls on_token(text) as the answer is written."""
+    if on_token is None:
+        return generate(prompt)
+    c = _counter.get()
+    if c is not None:
+        c[0] += 1
+    for attempt in range(6):
+        parts = []
+        try:
+            for piece in _raw_stream(prompt):
+                parts.append(piece)
+                on_token(piece)
+            return "".join(parts)
+        except Exception as e:
+            if parts or attempt == 5 or not _retryable(e):  # never restart a half-shown answer
+                raise
+            wait = _retry_wait(e, attempt)
+            print(f"  [rate limit] waiting {wait:.0f}s then retrying...")
+            time.sleep(wait)
+
+
 def generate_json(prompt, default=None):
     text = generate(prompt, json_mode=True)
     try:

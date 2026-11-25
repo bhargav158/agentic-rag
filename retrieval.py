@@ -82,3 +82,45 @@ def retrieve(query, strategy, k, repo=None):
     if strategy == "vector":
         return vector_search(query, k, repo)
     return hybrid_search(query, k, repo)
+
+
+# ---------- "read whole file" tool ----------
+_FILE_RE = re.compile(r"[\w./-]+\.[A-Za-z]{1,5}\b")
+
+
+def indexed_files(repo=None):
+    col = store.collection()
+    if col.count() == 0:
+        return {}
+    metas = col.get(where={"repo": repo} if repo else None, include=["metadatas"])["metadatas"]
+    return {m["file"]: m.get("path", m["file"]) for m in metas}
+
+
+def files_mentioned(question, repo=None):
+    """Indexed files the question names (e.g. 'explain server.py'). At most 2."""
+    labels = indexed_files(repo)
+    if not labels:
+        return []
+    found = []
+    for tok in _FILE_RE.findall((question or "").replace("\\", "/")):
+        tok = tok.lstrip("./").lower()
+        if not tok:
+            continue
+        for label, path in labels.items():
+            p = path.lower()
+            if (p == tok or p.endswith("/" + tok)) and label not in found:
+                found.append(label)
+    return found[:2]
+
+
+def read_file_chunks(label, max_chars=24000):
+    """Rebuild a file from the index, in order. Works even if the repo is not on disk."""
+    data = store.collection().get(where={"file": label}, include=["documents", "metadatas"])
+    items = sorted(zip(data["ids"], data["documents"], data["metadatas"]), key=lambda x: x[2]["start"])
+    out, total = [], 0
+    for id_, doc, meta in items:
+        if out and total + len(doc) > max_chars:
+            break
+        out.append(_chunk(id_, doc, meta, 1.0))
+        total += len(doc)
+    return out

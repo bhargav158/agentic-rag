@@ -36,6 +36,9 @@
   .meta { color: #555; font-size: 13px; margin-top: 12px; }
   .warn { color: #b45309; font-size: 13px; }
   .hint { color: #6b7280; font-size: 13px; margin: 0 0 10px; }
+  #draft { white-space: pre-wrap; color: #555; background: #fafafa; border: 1px dashed #bbb; border-radius: 6px; padding: 10px; margin-top: 10px; font-size: 14px; }
+  .ghost { background: #fff; color: #1a56db; }
+  .memo { color: #6b7280; font-size: 12px; margin: -4px 0 8px; }
 </style>
 </head>
 <body>
@@ -62,12 +65,15 @@
   <div class="bar">
     <input id="q" placeholder="Type your question about the selected repository...">
     <button id="go">Ask</button>
+    <button id="newchat" class="ghost">New chat</button>
   </div>
-  <p class="hint">For example: "Where is authentication handled?", "How does the agent call its tools?", "What happens if an API call fails?"</p>
+  <div id="memo" class="memo"></div>
+  <p class="hint">For example: "Where is authentication handled?", "How does the agent call its tools?", "What happens if an API call fails?" You can also ask follow-ups such as "Where is that called from?" or name a file, such as "Explain server.py".</p>
   <details id="traceBox" open hidden>
     <summary>Agent steps (what the agent did)</summary>
     <div id="trace"></div>
   </details>
+  <div id="draft" hidden></div>
   <div id="result" hidden></div>
 </div>
 
@@ -144,6 +150,8 @@ const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") +
 
 function describe(e) {
   switch (e.step) {
+    case "condense": return ["Understood your follow-up as: \"" + e.standalone + "\"", "rewrite"];
+    case "read_file": return ["Question names a file, so the whole file was read: " + e.files.join(", ") + " (" + e.chunks + " parts)", "good"];
     case "route": return ["Router chose \"" + e.strategy + "\" search (" + (e.reason || "") + ")", ""];
     case "retrieve": return ["Searched (attempt " + e.attempt + ", " + e.strategy + "): \"" + e.query + "\"", ""];
     case "grade": return ["Grader kept " + e.relevant + " of " + e.total + " chunks as relevant", e.relevant ? "good" : "bad"];
@@ -183,20 +191,32 @@ function renderResult(e) {
   box.appendChild(el("div", "meta", "LLM calls: " + e.llm_calls + "  |  time: " + e.latency_s + "s  |  search attempts: " + e.attempts + "  |  verified: " + v));
 }
 
+let history = [], pendingQ = "";
+function updateMemo() {
+  $("memo").textContent = history.length ? "Remembering " + history.length + " earlier question" + (history.length > 1 ? "s" : "") + " for follow-ups. Click New chat to start fresh." : "";
+}
+
 ws.onmessage = ev => {
   const e = JSON.parse(ev.data);
-  if (e.step === "final") { renderResult(e); $("traceBox").open = false; $("go").disabled = false; }
-  else if (e.step === "error") { const b = $("result"); b.hidden = false; b.innerHTML = ""; b.appendChild(el("div", "status err", "Error: " + e.message)); $("go").disabled = false; }
-  else addStep(e);
+  if (e.step === "token") { const d = $("draft"); d.hidden = false; d.textContent += e.text; }
+  else if (e.step === "final") {
+    $("draft").hidden = true; $("draft").textContent = "";
+    renderResult(e);
+    history.push({ q: pendingQ, a: e.parts ? e.parts.answer : e.answer }); history = history.slice(-3); updateMemo();
+    $("traceBox").open = false; $("go").disabled = false;
+  }
+  else if (e.step === "error") { $("draft").hidden = true; const b = $("result"); b.hidden = false; b.innerHTML = ""; b.appendChild(el("div", "status err", "Error: " + e.message)); $("go").disabled = false; }
+  else { if (e.step === "regenerate") $("draft").textContent = ""; addStep(e); }
 };
 function ask() {
   const q = $("q").value.trim();
   if (!q) return;
-  $("trace").innerHTML = ""; $("result").hidden = true; $("traceBox").hidden = false; $("traceBox").open = true;
-  $("go").disabled = true;
-  ws.send(JSON.stringify({ question: q, repo: $("repo").value }));
+  $("trace").innerHTML = ""; $("result").hidden = true; $("draft").hidden = true; $("draft").textContent = ""; $("traceBox").hidden = false; $("traceBox").open = true;
+  $("go").disabled = true; pendingQ = q;
+  ws.send(JSON.stringify({ question: q, repo: $("repo").value, history: history }));
 }
 $("go").onclick = ask;
+$("newchat").onclick = () => { history = []; updateMemo(); $("result").hidden = true; $("draft").hidden = true; $("traceBox").hidden = true; $("q").value = ""; $("q").focus(); };
 $("q").addEventListener("keydown", e => { if (e.key === "Enter") ask(); });
 loadRepos();
 </script>

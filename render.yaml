@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: agentic-rag
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # you type it in the Render dashboard, it is never stored in git
+      - key: APP_PASSWORD
+        sync: false          # visitors must enter this password
+      - key: RATE_LIMIT_PER_MIN
+        value: "10"
+      - key: MAX_CHUNKS
+        value: "250"

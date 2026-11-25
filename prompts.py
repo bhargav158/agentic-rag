@@ -92,3 +92,15 @@ README:
 
 FILES:
 {files}"""
+
+
+CONDENSE = """TASK: CONDENSE
+Rewrite the user's latest question so it can be understood without the conversation.
+Replace pronouns and references ("it", "that function", "the previous file") with the real names used in the conversation.
+If the latest question is already self-contained, return it unchanged.
+Return only the rewritten question.
+
+Conversation:
+{history}
+
+Latest question: {question}"""

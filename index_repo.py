@@ -1,4 +1,4 @@
-"""Index a code repository: walk files -> chunk by lines -> embed -> store in ChromaDB.
+"""Index a code repository: walk files -> chunk by function/class -> embed -> store in ChromaDB.
 
 Usage:  python index_repo.py C:\\path\\to\\repo
         python index_repo.py C:\\path\\to\\repo --name myrepo --github owner/repo
@@ -10,7 +10,8 @@ import os
 
 import llm
 import store
-from config import CHUNK_LINES, CHUNK_OVERLAP, MAX_CHUNKS
+from chunking import chunk_text
+from config import MAX_CHUNKS
 
 EXTS = {".py", ".js", ".jsx", ".ts", ".tsx", ".md", ".html", ".sql",
         ".yml", ".yaml", ".toml", ".txt", ".java", ".c", ".cpp", ".go"}
@@ -18,19 +19,6 @@ SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "bu
              ".next", "chroma_db", ".idea", ".vscode", "coverage"}
 SKIP_FILES = {"package-lock.json", "yarn.lock", "pnpm-lock.yaml"}
 MAX_BYTES = 200_000
-
-
-def chunk_file(text):
-    """Yield (start_line, end_line, body). Chunks overlap by CHUNK_OVERLAP lines."""
-    lines = text.splitlines()
-    step = CHUNK_LINES - CHUNK_OVERLAP
-    for start in range(0, max(len(lines), 1), step):
-        end = min(start + CHUNK_LINES, len(lines))
-        body = "\n".join(lines[start:end])
-        if body.strip():
-            yield start + 1, end, body
-        if end >= len(lines):
-            break
 
 
 def collect_files(path):
@@ -71,15 +59,18 @@ def index_repo(path, name=None, reset=False, github="", progress=None):
             continue
         seen.add(digest)
         files += 1
-        for s, e, body in chunk_file(text):
+        for s, e, body, syms in chunk_text(rel, text):
             if len(ids) >= MAX_CHUNKS:
                 capped = True
                 break
             label = f"{name}/{rel}"
+            head = f"[{label}:{s}-{e}]"
+            if syms:
+                head += "\n# defines: " + ", ".join(syms[:8])
             ids.append(f"{label}:{s}-{e}")
-            docs.append(f"[{label}:{s}-{e}]\n{body}")
+            docs.append(f"{head}\n{body}")
             metas.append({"file": label, "path": rel, "start": s, "end": e,
-                          "repo": name, "github": github or ""})
+                          "repo": name, "github": github or "", "symbols": ", ".join(syms[:8])})
         if capped:
             break
 

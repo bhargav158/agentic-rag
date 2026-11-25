@@ -46,7 +46,14 @@ def fake_generate(prompt, json_mode=False):
         return json.dumps({"question": "What does run_agent do?", "answer": "It runs the loop."})
     if task == "OVERVIEW":
         return OVERVIEW
+    if task == "CONDENSE":
+        return "What calls the retrieve function?"
     return "ok"
+
+
+def fake_stream(prompt):
+    for i in range(0, len(STRUCTURED), 12):  # the answer arrives in small pieces
+        yield STRUCTURED[i:i + 12]
 
 
 def fake_embed(texts, task):
@@ -61,12 +68,21 @@ def fake_embed(texts, task):
 
 
 llm._raw_generate = fake_generate
+llm._raw_stream = fake_stream
 llm.embed = fake_embed
 
-import agent, benchmark, formatting, gen_questions, index_repo, repo_manager, retrieval, server, store  # noqa: E402
+import agent, benchmark, chunking, config, formatting, gen_questions, index_repo, repo_manager, retrieval, server, store  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import shutil  # noqa: E402
+
+real_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+root = tempfile.mkdtemp()  # index a clean copy, so stray folders (repos/, venv/) cannot affect the test
+for f in os.listdir(real_root):
+    if f.endswith((".py", ".md", ".html")):
+        shutil.copy(os.path.join(real_root, f), root)
+shutil.copytree(os.path.join(real_root, "tests"), os.path.join(root, "tests"), ignore=shutil.ignore_patterns("__pycache__"))
+shutil.copytree(os.path.join(real_root, "static"), os.path.join(root, "static"))
 
 # ---- formatting ----
 p = formatting.parse_answer("**ANSWER:** Yes.\nEXPLANATION: Because.\nWHERE:\n- a.py:1-2 - x\n- b.py:3-4 - y")
@@ -78,6 +94,33 @@ link = formatting.source_dict({"file": "r/a.py", "path": "a.py", "start": 1, "en
 assert link == "https://github.com/o/r/blob/HEAD/a.py#L1-L5", link
 assert formatting.source_dict({"file": "r/a.py", "path": "a.py", "start": 1, "end": 5, "github": ""})["link"] == ""
 print("formatting ok")
+
+# ---- function-level chunking ----
+PY = ("import os\n\nX = 1\n\n\ndef alpha():\n    return 1\n\n\n# helper for beta\ndef beta():\n    return 2\n\n\n"
+      "class Big:\n" + "".join(f"    def m{i}(self):\n" + "".join(f"        x{j} = {j}\n" for j in range(12)) + "\n"
+                                  for i in range(10)))
+n_lines = len(PY.splitlines())
+ch = chunking.chunk_text("a.py", PY)
+covered = set()
+for s, e, body, syms in ch:
+    covered.update(range(s, e + 1))
+    assert e - s + 1 <= chunking.MAX_UNIT, (s, e)
+assert covered == set(range(1, n_lines + 1)), "some lines were dropped"
+all_syms = [x for c in ch for x in c[3]]
+assert "alpha" in all_syms and "beta" in all_syms and "Big.m0" in all_syms, all_syms
+beta = next(c for c in ch if "beta" in c[3])
+assert "# helper for beta" in beta[2], "comment above a function must stay with it"
+assert chunking.chunk_text("bad.py", "def broken(:\n  pass\n")  # syntax error falls back to line windows
+
+JS = "import x from 'x';\n\nexport function foo() {\n  return 1;\n}\n\nconst bar = async (a) => {\n  return a;\n};\n" + "// pad\n" * 60
+jchunks = chunking.chunk_text("a.js", JS)
+assert {"foo", "bar"} <= {s for c in jchunks for s in c[3]}, jchunks
+MD = "# Title\nintro\n\n```\n# not a heading\n```\n\n## Setup\n" + "line\n" * 60 + "## Usage\ntext\n"
+mchunks = chunking.chunk_text("README.md", MD)
+msyms = {s for c in mchunks for s in c[3]}
+assert "Setup" in msyms and "Usage" in msyms and "not a heading" not in msyms, msyms
+assert len(chunking.chunk_text("x.txt", "\n".join(str(i) for i in range(100)))) >= 3
+print("chunking ok")
 
 # ---- url parsing (also rejects non-GitHub links) ----
 assert repo_manager.parse_github_url("https://github.com/bhargav158/ai-agent-app") == ("bhargav158", "ai-agent-app")
@@ -136,6 +179,32 @@ rres = agent.run_agent("hello", None, "dup")
 assert all(s["file"].startswith("dup/") for s in rres["sources"]), rres["sources"]
 print("scoped agent ok")
 
+# follow-up question is condensed using the conversation
+hist = [{"q": "What does run_agent do?", "a": "It runs the loop."}]
+fres = agent.run_agent("and where is it called?", None, None, hist)
+fsteps = [e["step"] for e in fres["trace"]]
+assert fsteps[0] == "condense" and fres["standalone"] == "What calls the retrieve function?", fsteps
+assert "condense" not in [e["step"] for e in agent.run_agent("What does run_agent do?")["trace"]]
+print("follow-up ok")
+
+# a question that names a file reads the whole file instead of searching
+rf = agent.run_agent("Explain agent.py", None, "selftest")
+rsteps = [e["step"] for e in rf["trace"]]
+assert "read_file" in rsteps and "route" not in rsteps and "retrieve" not in rsteps, rsteps
+assert rf["sources"] and all(s["file"] == "selftest/agent.py" for s in rf["sources"]), rf["sources"]
+assert retrieval.files_mentioned("what is in nothing_here.py?", "selftest") == []
+print("read-file tool ok")
+
+# the answer streams to the UI token by token
+events = []
+sres = agent.run_agent("How does the agent loop work?", events.append)
+toks = [e["text"] for e in events if e["step"] == "token"]
+assert len(toks) > 3 and "".join(toks).startswith(STRUCTURED), toks
+assert sres["answer"] == STRUCTURED
+assert "token" not in [e["step"] for e in sres["trace"]], "tokens must not bloat the trace"
+print("streaming ok:", len(toks), "tokens")
+
+
 # ---- benchmark ----
 qs = gen_questions.main(n=3, out=os.path.join(os.environ["CHROMA_PATH"], "q.json"), repo="dup")
 assert qs is not None
@@ -172,14 +241,43 @@ assert r.status_code == 200 and j["parts"]["answer"] and j["parts"]["where"], j
 assert all(s["link"].startswith("https://github.com/test/selfrepo/blob/HEAD/") for s in j["sources"]), j["sources"]
 
 with client.websocket_connect("/ws") as sock:
-    sock.send_json({"question": "How does retrieval work?", "repo": "selfrepo"})
+    sock.send_json({"question": "and where is it used?", "repo": "selfrepo", "history": [{"q": "What is retrieval?", "a": "Finding chunks."}]})
     seen = []
     while True:
         ev = sock.receive_json()
         seen.append(ev["step"])
         if ev["step"] in ("final", "error"):
             break
-    assert seen[-1] == "final" and "route" in seen and "retrieve" in seen, seen
-print("server + websocket ok:", seen)
+    assert seen[-1] == "final" and "condense" in seen and "token" in seen and "retrieve" in seen, seen
+print("server + websocket ok:", sorted(set(seen)))
+
+# ---- password gate and rate limit ----
+import base64
+from starlette.websockets import WebSocketDisconnect
+good = {"Authorization": "Basic " + base64.b64encode(b"me:secret").decode()}
+bad = {"Authorization": "Basic " + base64.b64encode(b"me:wrong").decode()}
+config.APP_PASSWORD = "secret"
+assert client.get("/health").status_code == 200, "health check must stay open for the host"
+assert client.get("/").status_code == 401
+assert client.get("/", headers=bad).status_code == 401
+assert client.get("/", headers=good).status_code == 200
+try:
+    with client.websocket_connect("/ws"):
+        raise AssertionError("websocket opened without a password")
+except WebSocketDisconnect:
+    pass
+with client.websocket_connect("/ws", headers=good) as sock:
+    sock.send_json({"question": "How does retrieval work?", "repo": "selfrepo"})
+    while sock.receive_json()["step"] not in ("final", "error"):
+        pass
+config.APP_PASSWORD = ""
+print("password gate ok")
+
+config.RATE_LIMIT_PER_MIN = 2
+codes = [client.post("/ask", json={"question": "What does the router do?", "repo": "selfrepo"}).status_code for _ in range(3)]
+assert codes == [200, 200, 429], codes
+config.RATE_LIMIT_PER_MIN = 0
+server._hits.clear()
+print("rate limit ok")
 
 print("\nALL OFFLINE TESTS PASSED")
